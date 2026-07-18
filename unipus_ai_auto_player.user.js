@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         U校园AI自动刷时长工具
-// @version      5.2.13
+// @version      5.2.14
 // @description  新视野大学英语自动识别目录、自动翻页、分配课时,高效刷课工具
 // @author       uxudjs
 // @match        https://ucontent.unipus.cn/*
@@ -27,8 +27,7 @@
     typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "";
 
   const pickName = (el) => {
-    if (!el) return "";
-    return safeText(el.title || el.innerText || el.textContent);
+    return safeText(el?.title || el?.innerText || el?.textContent);
   };
 
   const pickClickable = (root) => {
@@ -388,7 +387,7 @@
     } catch (e) {}
     if (nodes.length > 0) return nodes;
 
-    return Array.isArray(nodes) ? nodes : [];
+    return nodes;
   }
 
   if (IS_IFRAME || IS_IPUB) {
@@ -411,8 +410,8 @@
           unit: n.unit,
           section: n.section,
           micro: n.micro,
-          path: path,
-          isId: isId,
+          path,
+          isId,
         };
       });
     }
@@ -481,11 +480,9 @@
 
     function scanAndSend() {
       const list = getMenuList(document);
-      if (list.length > 0) {
-        sendMenuToParent(list);
-        return true;
-      }
-      return false;
+      if (!list.length) return false;
+      sendMenuToParent(list);
+      return true;
     }
 
     window.addEventListener("message", (e) => {
@@ -509,10 +506,6 @@
     function startIframeScan() {
       if (scanAndSend()) return;
       let fired = false;
-      const menuSelectors =
-        ".pc-slider-menu-unit, .pc-slider-menu-node, .pc-slider-menu-micro, " +
-        '.ant-tree-treenode, [role="treeitem"], [class*="tree-menu"], [role="menuitem"], ' +
-        ".menu--u3menu-3Xu4h";
       const ob = new MutationObserver(() => {
         if (fired) return;
         if (scanAndSend()) {
@@ -563,9 +556,9 @@
   let _clickResolve = null;
 
   function findVideoElement() {
-    const vjsVideo = document.querySelector("video.vjs-tech");
-    if (vjsVideo) return vjsVideo;
-    const video = document.querySelector("video");
+    const video =
+      document.querySelector("video.vjs-tech") ||
+      document.querySelector("video");
     if (video) return video;
     try {
       const iw = getIframeWin();
@@ -581,9 +574,7 @@
 
   function playVideo() {
     const video = findVideoElement();
-    if (!video) return;
-    if (!video.paused) return;
-    if (video.ended) return;
+    if (!video || !video.paused || video.ended) return;
 
     // 移除平台禁用的控件类，恢复播放能力
     const vjsContainer = video.closest(".video-js");
@@ -646,18 +637,13 @@
   }
 
   function isVideoPlaying(video) {
-    if (!video) return false;
-    return !video.paused && !video.ended && video.readyState > 2;
+    return !!video && !video.paused && !video.ended && video.readyState > 2;
   }
 
   function waitForVideoEnd() {
     return new Promise((resolve) => {
       const video = findVideoElement();
-      if (!video) {
-        resolve(false);
-        return;
-      }
-      if (video.ended) {
+      if (!video || video.ended) {
         resolve(false);
         return;
       }
@@ -754,8 +740,6 @@
       }
     }
 
-    if (type === "UAI_PONG") {
-    }
   });
 
   function safeClick(target) {
@@ -943,7 +927,6 @@
         window.removeEventListener("UAI_MENU_READY", onReady);
         callback();
       },
-      { once: false },
     );
   }
 
@@ -994,11 +977,12 @@
 
   function isTaskActive(task) {
     const el = task.element;
-    if (!el) return false;
-    if (el.classList.contains("active")) return true;
-    if (el.classList.contains("pc-task-active")) return true;
-    if (el.classList.contains("current")) return true;
-    return false;
+    return (
+      !!el &&
+      (el.classList.contains("active") ||
+        el.classList.contains("pc-task-active") ||
+        el.classList.contains("current"))
+    );
   }
 
   function addLog(message, isCountdown = false) {
@@ -1195,7 +1179,7 @@
       "font-size:18px;font-weight:bold;color:#fff;margin-bottom:8px;text-align:center;",
     );
     title.innerHTML =
-      '📚 U校园AI自动刷时长工具 <span style="font-size:12px;opacity:0.7;">v5.2.13</span>';
+      '📚 U校园AI自动刷时长工具 <span style="font-size:12px;opacity:0.7;">v5.2.14</span>';
 
     let authorInfo = mkDiv(
       "display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;padding-bottom:2px;",
@@ -1527,7 +1511,7 @@
         if (curTime !== lastTimeValue || curIdx !== lastStartIdx) {
           removeCountdownLine();
           const jobs = menuList.slice(curIdx);
-          if (!Array.isArray(jobs) || !jobs.length) {
+          if (!jobs.length) {
             addLog("⚠️ 目录列表为空，请先展开目录后重试");
             return;
           }
