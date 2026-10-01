@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         U校园AI自动刷时长工具
-// @version      5.2.14
+// @version      5.2.15
 // @description  新视野大学英语自动识别目录、自动翻页、分配课时,高效刷课工具
 // @author       uxudjs
 // @match        https://ucontent.unipus.cn/*
@@ -22,6 +22,168 @@
   const IS_IFRAME = window.self !== window.top;
   const IS_IPUB = location.hostname.includes("ipub.unipus.cn");
   const IS_UCONTENT = location.hostname.includes("ucontent.unipus.cn");
+
+  const VIDEO_PLAYBACK_RATES = [1, 1.25, 1.5, 2, 3, 4];
+  const VIDEO_MESSAGE_ORIGINS = [
+    "https://ucontent.unipus.cn",
+    "https://ipub.unipus.cn",
+  ];
+  let videoPlaybackRate = 1;
+  let videoRateEnabled = false;
+  const videoRateTargets = new Set();
+  const videoRateObservers = new Map();
+  const videoRateFrames = new Set();
+
+  function normalizeVideoPlaybackRate(value) {
+    const rate = Number(value);
+    return VIDEO_PLAYBACK_RATES.includes(rate) ? rate : 1;
+  }
+
+  function applyVideoPlaybackRate(video, rate) {
+    try {
+      if (video.defaultPlaybackRate !== rate) video.defaultPlaybackRate = rate;
+      if (video.playbackRate !== rate) video.playbackRate = rate;
+    } catch (e) {}
+  }
+
+  function onVideoRateEvent(e) {
+    if (!videoRateEnabled || e.target?.tagName !== "VIDEO") return;
+    videoRateTargets.add(e.target);
+    applyVideoPlaybackRate(e.target, videoPlaybackRate);
+  }
+
+  function sendVideoRateToFrames() {
+    document.querySelectorAll("iframe").forEach((iframe) => {
+      try {
+        iframe.contentWindow?.postMessage(
+          {
+            type: "UAI_CMD",
+            cmd: "SET_VIDEO_RATE",
+            enabled: videoRateEnabled,
+            playbackRate: videoPlaybackRate,
+          },
+          "*",
+        );
+      } catch (e) {}
+    });
+  }
+
+  // 同源页面直接设置倍速，跨域页面通过消息交给 iframe 内的脚本处理
+  function refreshVideoPlaybackRate() {
+    if (!videoRateEnabled) return;
+    const documents = new Set();
+    const frames = new Set();
+    function scan(doc) {
+      if (!doc || !doc.documentElement || documents.has(doc)) return;
+      documents.add(doc);
+      doc.querySelectorAll("video").forEach((video) => {
+        videoRateTargets.add(video);
+        applyVideoPlaybackRate(video, videoPlaybackRate);
+      });
+      doc.querySelectorAll("iframe").forEach((iframe) => {
+        frames.add(iframe);
+        if (!videoRateFrames.has(iframe)) {
+          iframe.addEventListener("load", refreshVideoPlaybackRate);
+          videoRateFrames.add(iframe);
+        }
+        try {
+          scan(iframe.contentDocument);
+        } catch (e) {}
+      });
+    }
+    scan(document);
+    videoRateObservers.forEach((observer, doc) => {
+      if (documents.has(doc)) return;
+      observer.disconnect();
+      ["loadedmetadata", "play", "ratechange"].forEach((type) =>
+        doc.removeEventListener(type, onVideoRateEvent, true),
+      );
+      videoRateObservers.delete(doc);
+    });
+    documents.forEach((doc) => {
+      if (videoRateObservers.has(doc)) return;
+      ["loadedmetadata", "play", "ratechange"].forEach((type) =>
+        doc.addEventListener(type, onVideoRateEvent, true),
+      );
+      const observer = new MutationObserver((mutations) => {
+        const changed = mutations.some((mutation) =>
+          [...mutation.addedNodes, ...mutation.removedNodes].some(
+            (node) =>
+              node.nodeType === 1 &&
+              (node.matches("video, iframe") ||
+                node.querySelector("video, iframe")),
+          ),
+        );
+        if (changed) refreshVideoPlaybackRate();
+      });
+      observer.observe(doc.documentElement, { childList: true, subtree: true });
+      videoRateObservers.set(doc, observer);
+    });
+    videoRateFrames.forEach((iframe) => {
+      if (frames.has(iframe)) return;
+      iframe.removeEventListener("load", refreshVideoPlaybackRate);
+      videoRateFrames.delete(iframe);
+    });
+    videoRateTargets.forEach((video) => {
+      if (!video.isConnected || !documents.has(video.ownerDocument)) {
+        videoRateTargets.delete(video);
+      }
+    });
+    sendVideoRateToFrames();
+  }
+
+  function setVideoPlaybackRate(enabled, value) {
+    videoRateEnabled = enabled === true;
+    videoPlaybackRate = normalizeVideoPlaybackRate(value);
+    if (videoRateEnabled) {
+      refreshVideoPlaybackRate();
+      return;
+    }
+    videoRateObservers.forEach((observer, doc) => {
+      observer.disconnect();
+      ["loadedmetadata", "play", "ratechange"].forEach((type) =>
+        doc.removeEventListener(type, onVideoRateEvent, true),
+      );
+    });
+    videoRateObservers.clear();
+    videoRateFrames.forEach((iframe) =>
+      iframe.removeEventListener("load", refreshVideoPlaybackRate),
+    );
+    videoRateFrames.clear();
+    videoRateTargets.forEach((video) => applyVideoPlaybackRate(video, 1));
+    videoRateTargets.clear();
+    sendVideoRateToFrames();
+  }
+
+  window.addEventListener("message", (e) => {
+    if (!e.data || !VIDEO_MESSAGE_ORIGINS.includes(e.origin)) return;
+    if (e.data.type === "UAI_CMD" && e.data.cmd === "SET_VIDEO_RATE") {
+      if (!IS_IFRAME || e.source !== window.parent) return;
+      setVideoPlaybackRate(e.data.enabled, e.data.playbackRate);
+    } else if (e.data.type === "UAI_VIDEO_RATE_READY") {
+      const isChild = [...document.querySelectorAll("iframe")].some(
+        (iframe) => iframe.contentWindow === e.source,
+      );
+      if (!isChild) return;
+      try {
+        e.source.postMessage(
+          {
+            type: "UAI_CMD",
+            cmd: "SET_VIDEO_RATE",
+            enabled: videoRateEnabled,
+            playbackRate: videoPlaybackRate,
+          },
+          e.origin,
+        );
+      } catch (e) {}
+    }
+  });
+
+  if (IS_IFRAME) {
+    try {
+      window.parent.postMessage({ type: "UAI_VIDEO_RATE_READY" }, "*");
+    } catch (e) {}
+  }
 
   const safeText = (v) =>
     typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "";
@@ -574,6 +736,9 @@
 
   function playVideo() {
     const video = findVideoElement();
+    if (video && videoPlaybackEnabled) {
+      applyVideoPlaybackRate(video, videoPlaybackRate);
+    }
     if (!video || !video.paused || video.ended) return;
 
     // 移除平台禁用的控件类，恢复播放能力
@@ -633,6 +798,7 @@
           v.play();
         } catch (e) {}
       }
+      if (videoPlaybackEnabled) applyVideoPlaybackRate(v, videoPlaybackRate);
     }, 1000);
   }
 
@@ -1126,6 +1292,7 @@
   }
 
   function createFloatingBall() {
+    if (document.getElementById("unipus-ball")) return;
     let ball = document.createElement("div");
     ball.id = "unipus-ball";
     ball.style.cssText =
@@ -1179,7 +1346,7 @@
       "font-size:18px;font-weight:bold;color:#fff;margin-bottom:8px;text-align:center;",
     );
     title.innerHTML =
-      '📚 U校园AI自动刷时长工具 <span style="font-size:12px;opacity:0.7;">v5.2.14</span>';
+      '📚 U校园AI自动刷时长工具 <span style="font-size:12px;opacity:0.7;">v5.2.15</span>';
 
     let authorInfo = mkDiv(
       "display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;padding-bottom:2px;",
@@ -1387,6 +1554,8 @@
       "🎬 启用视频播放（等待视频结束后自动跳转，播放期间不计时）";
     videoCheckbox.addEventListener("change", function () {
       videoPlaybackEnabled = this.checked;
+      videoRateSelect.disabled = !videoPlaybackEnabled;
+      setVideoPlaybackRate(videoPlaybackEnabled, videoRateSelect.value);
       addLog(
         videoPlaybackEnabled
           ? "🎬 已启用视频播放模式"
@@ -1395,6 +1564,34 @@
     });
     videoRow.appendChild(videoCheckbox);
     videoRow.appendChild(videoLabelEl);
+
+    let videoRateRow = mkDiv(
+      "display:flex;align-items:center;gap:8px;margin-bottom:15px;",
+    );
+    let videoRateLabel = mkEl("label", "font-size:13px;color:#555;");
+    videoRateLabel.htmlFor = "unipus-video-rate";
+    videoRateLabel.textContent = "🎞️ 视频倍速:";
+    let videoRateSelect = mkEl(
+      "select",
+      "flex:1;padding:8px;border-radius:8px;border:2px solid #e0e0e0;" +
+        "font-size:13px;background:#fff;cursor:pointer;",
+    );
+    videoRateSelect.id = "unipus-video-rate";
+    videoRateSelect.disabled = !videoPlaybackEnabled;
+    VIDEO_PLAYBACK_RATES.forEach((rate) => {
+      const option = mkEl("option");
+      option.value = String(rate);
+      option.textContent = rate + "倍";
+      videoRateSelect.appendChild(option);
+    });
+    videoRateSelect.value = String(videoPlaybackRate);
+    videoRateSelect.addEventListener("change", function () {
+      this.value = String(normalizeVideoPlaybackRate(this.value));
+      setVideoPlaybackRate(videoPlaybackEnabled, this.value);
+      addLog("🎞️ 视频倍速已设置为 " + videoPlaybackRate + "倍");
+    });
+    videoRateRow.appendChild(videoRateLabel);
+    videoRateRow.appendChild(videoRateSelect);
 
     let btnContainer = mkDiv("display:flex;gap:10px;margin-bottom:15px;");
     startBtn = mkEl(
@@ -1425,6 +1622,7 @@
     contentBox.appendChild(timeLabel);
     contentBox.appendChild(timeInput);
     contentBox.appendChild(videoRow);
+    contentBox.appendChild(videoRateRow);
     contentBox.appendChild(btnContainer);
     contentBox.appendChild(log);
     panel.appendChild(title);
@@ -1558,6 +1756,7 @@
       isRunning = true;
       isPaused = false;
       shouldRestart = false;
+      setVideoPlaybackRate(videoPlaybackEnabled, videoRateSelect.value);
       startBtn.style.display = "none";
       pauseBtn.style.display = "block";
       pauseBtn.innerHTML = "⏸️ 暂停";
@@ -1755,10 +1954,17 @@
     }
   }
 
-  window.addEventListener("load", function () {
+  function initializeUI() {
     setTimeout(() => {
       createFloatingBall();
       clickIKnow();
     }, 1600);
-  });
+  }
+
+  // 兼容页面加载完成后才注入脚本的情况
+  if (document.readyState === "complete") {
+    initializeUI();
+  } else {
+    window.addEventListener("load", initializeUI, { once: true });
+  }
 })();

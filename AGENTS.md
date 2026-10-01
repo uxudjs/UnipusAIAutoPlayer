@@ -14,9 +14,9 @@ U校园AI自动刷时长工具 — 一个 Tampermonkey 用户脚本，自动遍�
 
 脚本运行在两个端，通过 `postMessage` 通信：
 
-### 1. iframe / ipub 端（IS_IFRAME || IS_IPUB，约第 331 行起）
+### 1. iframe / ipub 端（IS_IFRAME || IS_IPUB）
 - 扫描菜单 DOM（`.pc-slider-menu-*`），序列化后通过 `UAI_MENU_LIST` 消息发给父窗口
-- 监听 `UAI_CMD` 消息执行 CLICK / SCAN / PING 命令
+- 监听 `UAI_CMD` 消息执行 CLICK / SCAN / PING 命令，并接收视频倍速配置
 
 ### 2. 主框架端（ucontent.unipus.cn，其余部分）
 - `createFloatingBall()` → 右下角悬浮球入口
@@ -27,9 +27,10 @@ U校园AI自动刷时长工具 — 一个 Tampermonkey 用户脚本，自动遍�
 | 类型 | 方向 | 用途 |
 |------|------|------|
 | `UAI_MENU_LIST` | iframe → 父窗口 | 发送序列化菜单列表 |
-| `UAI_CMD` (CLICK/SCAN/PING) | 父窗口 → iframe | 发送操作指令 |
+| `UAI_CMD` (CLICK/SCAN/PING/SET_VIDEO_RATE) | 父窗口 → iframe | 发送操作指令或视频倍速配置 |
 | `UAI_CLICK_RESULT` | iframe → 父窗口 | 点击结果反馈 |
 | `UAI_PONG` | iframe → 父窗口 | 心跳响应 |
+| `UAI_VIDEO_RATE_READY` | iframe → 父窗口 | 请求同步当前视频倍速配置 |
 
 ## 菜单识别策略
 
@@ -38,8 +39,16 @@ U校园AI自动刷时长工具 — 一个 Tampermonkey 用户脚本，自动遍�
 2. 按扁平化节点遍历，按 class 推断层级
 3. 按 `aria-level` / 缩进距离推断层级（ant-tree 通用方案）
 4. 按 `[role="menuitem"]` 递归遍历 `<ul role="menu">`
+5. 按 AI 版课本的 u3menu 结构识别 Unit 与 courseware 节点
 
 目录项数据结构：`{ unit, section, micro, element }`
+
+## 视频倍速
+
+- 视频模式提供 1 / 1.25 / 1.5 / 2 / 3 / 4 倍速，默认 1 倍，只调整 `playbackRate` / `defaultPlaybackRate`，不改变任务倒计时分配
+- 同源课件直接设置；跨域课件通过父子窗口消息同步，并校验消息来源窗口与 ucontent / ipub 来源域名
+- 新视频与 iframe 加载后自动同步；关闭视频模式时恢复已控制视频的 1 倍速，并清理观察器与事件监听
+- 倍速同步不扩展原有跨域视频自动播放及播放结束检测能力
 
 ## 版本号更新规则
 
